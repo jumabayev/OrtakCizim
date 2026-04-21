@@ -4,22 +4,22 @@
 İki veya daha fazla telefon aynı Wi-Fi’da olduğunda, biri ekranda çizdiğinde diğerleri anında görür. Hesap yok, internet yok, sunucu yok.
 
 > iOS & Android · Flutter · AES-256-GCM · UDP broadcast
-> **Güncel sürüm: [v0.1.0](https://github.com/jumabayev/OrtakCizim/releases/tag/v0.1.0)**
+> **Güncel sürüm: [v0.2.0](https://github.com/jumabayev/OrtakCizim/releases/tag/v0.2.0)**
 
 ## Android APK indirme
 
 <table>
   <tr>
     <td align="center" width="220">
-      <a href="https://github.com/jumabayev/OrtakCizim/releases/download/v0.1.0/ortakcizim-v0.1.0.apk">
-        <img src="qr-v0.1.0.png" width="200" alt="QR: OrtakCizim v0.1.0 APK indir">
+      <a href="https://github.com/jumabayev/OrtakCizim/releases/download/v0.2.0/ortakcizim-v0.2.0.apk">
+        <img src="qr-v0.2.0.png" width="200" alt="QR: OrtakCizim v0.2.0 APK indir">
       </a>
       <br>
       <sub>Telefonun kamerasıyla okut</sub>
     </td>
     <td>
       <p><b>📥 Doğrudan indirme:</b></p>
-      <p><a href="https://github.com/jumabayev/OrtakCizim/releases/download/v0.1.0/ortakcizim-v0.1.0.apk">ortakcizim-v0.1.0.apk</a> (~46 MB)</p>
+      <p><a href="https://github.com/jumabayev/OrtakCizim/releases/download/v0.2.0/ortakcizim-v0.2.0.apk">ortakcizim-v0.2.0.apk</a> (~46 MB)</p>
       <p><b>🗂 Tüm sürümler:</b></p>
       <p><a href="https://github.com/jumabayev/OrtakCizim/releases">github.com/jumabayev/OrtakCizim/releases</a></p>
       <ol>
