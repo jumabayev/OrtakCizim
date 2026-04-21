@@ -10,6 +10,10 @@
 	<string>OrtakÇizim</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>OrtakÇizim aynı Wi-Fi’deki diğer cihazlarla çizimleri paylaşmak için yerel ağa bağlanır.</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>Çizdiğin resmi fotoğraflara kaydeder.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Kaydettiğin çizimleri fotoğraflarda görebilmek için.</string>
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_ortakcizim._udp</string>

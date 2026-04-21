@@ -36,8 +36,12 @@
 - 🎨 **Anlık ortak tuval** — parmakla çizince hemen diğer telefonlarda da beliriyor.
 - 🔒 **Şifreli kanal** — kanal adı ortak parolayı belirler. Farklı kanaldaki çizimler görünmez.
 - 👥 **Canlı ressam listesi** — kim bağlı, hangi renkte olduğu üst barda görünür.
-- 🌈 **12 hazır renk + 6 fırça kalınlığı** — küçük çocuklar için anlaşılır arayüz.
-- 🧽 **Tahtayı temizle** — bir buton, herkeste siliniyor.
+- 🖌 **Fırça + 6 şekil** — fırça, kare, daire, çizgi, ok, yıldız, kalp.
+- 🪣 **Dolgu (fill) toggle** — şekilleri içi dolu çizme.
+- 🌈 **Gökkuşağı fırçası** — her segment farklı HSL rengi, karışık renkli çizim.
+- 🌊 **Yumuşak eğriler** — midpoint-quadratic Bezier ile pürüzsüz stroke.
+- ↩ **Geri al (undo)** — kendi son hareketini sil, diğer ressamlarda da anında kaybolur.
+- 💾 **PNG olarak kaydet + 📤 paylaş** — galeriye kaydedip sosyal uygulamalara paylaşabilir.
 - 🔋 **Offline** — evdeki Wi-Fi yeter, internet bağlantısı gerekmiyor.
 
 ## Nasıl çalışır
@@ -106,10 +110,19 @@ flutter run
 
 İki cihazı aynı Wi-Fi’ya bağla, ikisinde de aynı kanal adını yaz — başla!
 
+## Yapıldı (v0.2.0)
+
+- ✅ PNG olarak kaydet + sosyal uygulamalarda paylaş (`gal` + `share_plus`)
+- ✅ Geri al (undo) — yerel sil + `delete` paketi broadcast
+- ✅ Altı şekil (dikdörtgen, elips, çizgi, ok, yıldız, kalp)
+- ✅ Şekillerde dolgu (fill) toggle
+- ✅ Gökkuşağı fırçası — HSL hue döngüsü
+- ✅ Yumuşak eğri render (midpoint quadratic Bezier)
+
 ## Mümkün geliştirmeler
 
-- PNG olarak kaydet / paylaş
-- Geri al (undo) — son hamle yerel olarak silinir ve diğerlere "undo" paketi gider
-- Sihirli fırça: yıldız, kalp, parlak iz vb. hazır şablonlar
+- Şekilleri seçip **taşı / yeniden boyutlandır** (v0.2.1 adayı)
+- Boya kovası ile mevcut şekli **sonradan doldur**
+- Yerel çizim **geçmişi** (SQLite) — kanala yeni katılana son N hamleyi göster
+- BBTalk'u yan yana — çizim yaparken sesli konuşma
 - Renk damlatıcısı (uzun basınca mevcut renklerin dışından seç)
-- BBTalk’u yan yana — çizim yaparken sesli konuşma
