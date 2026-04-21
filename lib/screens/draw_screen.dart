@@ -32,7 +32,7 @@ String? _subnetBroadcast(String? ip, String? mask) {
   }
 }
 
-enum Tool { brush, rect, ellipse, line, arrow, star, heart }
+enum Tool { select, brush, rect, ellipse, line, arrow, star, heart }
 
 ShapeKind _toolToShape(Tool t) {
   switch (t) {
@@ -49,9 +49,13 @@ ShapeKind _toolToShape(Tool t) {
     case Tool.heart:
       return ShapeKind.heart;
     case Tool.brush:
-      throw StateError('brush is not a shape');
+    case Tool.select:
+      throw StateError('not a shape tool');
   }
 }
+
+/// Seçili şekil üzerindeki 4 köşe tutamağı (yeniden boyutlandırma için).
+enum _Handle { topLeft, topRight, bottomRight, bottomLeft }
 
 class _Peer {
   final String id;
@@ -102,6 +106,15 @@ class _DrawScreenState extends State<DrawScreen> {
   String? _myStrokeKey; // stroke sırasında
   final List<DrawPoint> _pendingPoints = [];
   ShapeObject? _previewShape;
+
+  // Seçim (Tool.select)
+  String? _selectedKey;
+  _Handle? _activeHandle; // null = gövdeyi taşı
+  DrawPoint? _dragInitialP1;
+  DrawPoint? _dragInitialP2;
+  Offset? _dragStartLocal;
+  DateTime _lastMoveBroadcast = DateTime.fromMillisecondsSinceEpoch(0);
+  static const _moveBroadcastInterval = Duration(milliseconds: 40);
 
   Size _canvasSize = Size.zero;
   String? _ownIp;
@@ -252,9 +265,28 @@ class _DrawScreenState extends State<DrawScreen> {
         break;
 
       case IncomingDelete d:
-        final key = '${d.senderId}#${d.objectId}';
+        final key = '${d.targetSenderId}#${d.objectId}';
         if (_objects.remove(key) != null) {
           _order.remove(key);
+          if (_selectedKey == key) _selectedKey = null;
+          setState(() => _repaint++);
+        }
+        break;
+
+      case IncomingMove m:
+        final key = '${m.targetSenderId}#${m.objectId}';
+        final existing = _objects[key];
+        if (existing is ShapeObject) {
+          _objects[key] = ShapeObject(
+            senderId: existing.senderId,
+            objectId: existing.objectId,
+            color: existing.color,
+            fillColor: existing.fillColor,
+            brushSize: existing.brushSize,
+            kind: existing.kind,
+            p1: m.p1,
+            p2: m.p2,
+          );
           setState(() => _repaint++);
         }
         break;
@@ -279,8 +311,82 @@ class _DrawScreenState extends State<DrawScreen> {
     );
   }
 
+  // ---- Hit-test yardımcıları ---------------------------------------------
+
+  /// Verilen local ofseti içeren en üstteki şekli bul (reverse z-order).
+  String? _hitTestShape(Offset local) {
+    for (int i = _order.length - 1; i >= 0; i--) {
+      final key = _order[i];
+      final obj = _objects[key];
+      if (obj is! ShapeObject) continue;
+      final r = Rect.fromPoints(
+        Offset(obj.p1.x * _canvasSize.width, obj.p1.y * _canvasSize.height),
+        Offset(obj.p2.x * _canvasSize.width, obj.p2.y * _canvasSize.height),
+      ).inflate(8);
+      if (r.contains(local)) return key;
+    }
+    return null;
+  }
+
+  /// Seçili şeklin köşe tutamağına mı bastı?
+  _Handle? _hitTestHandle(Offset local) {
+    final key = _selectedKey;
+    if (key == null) return null;
+    final obj = _objects[key];
+    if (obj is! ShapeObject) return null;
+    final r = Rect.fromPoints(
+      Offset(obj.p1.x * _canvasSize.width, obj.p1.y * _canvasSize.height),
+      Offset(obj.p2.x * _canvasSize.width, obj.p2.y * _canvasSize.height),
+    );
+    const tol = 28.0;
+    final corners = <_Handle, Offset>{
+      _Handle.topLeft: r.topLeft,
+      _Handle.topRight: r.topRight,
+      _Handle.bottomRight: r.bottomRight,
+      _Handle.bottomLeft: r.bottomLeft,
+    };
+    for (final e in corners.entries) {
+      if ((e.value - local).distance < tol) return e.key;
+    }
+    return null;
+  }
+
   void _onPanDown(DragDownDetails d) {
     if (_canvasSize == Size.zero) return;
+
+    // --- Seçim aracı ---
+    if (_tool == Tool.select) {
+      // Önce mevcut seçimin tutamağına mı bastık?
+      final handle = _hitTestHandle(d.localPosition);
+      if (handle != null && _selectedKey != null) {
+        final obj = _objects[_selectedKey!];
+        if (obj is ShapeObject) {
+          _activeHandle = handle;
+          _dragStartLocal = d.localPosition;
+          _dragInitialP1 = obj.p1;
+          _dragInitialP2 = obj.p2;
+          return;
+        }
+      }
+      // Aksi halde şekil seçmeye dene
+      final newSel = _hitTestShape(d.localPosition);
+      if (newSel != null) {
+        final obj = _objects[newSel];
+        if (obj is ShapeObject) {
+          _selectedKey = newSel;
+          _activeHandle = null;
+          _dragStartLocal = d.localPosition;
+          _dragInitialP1 = obj.p1;
+          _dragInitialP2 = obj.p2;
+        }
+      } else {
+        // Boşluğa basıldı → seçimi kaldır
+        _selectedKey = null;
+      }
+      setState(() => _repaint++);
+      return;
+    }
+
     _myObjectId = _rng.nextInt(0xFFFFFFFF);
     if (_tool == Tool.brush) {
       final key = '${widget.settings.userId}#$_myObjectId';
@@ -320,6 +426,88 @@ class _DrawScreenState extends State<DrawScreen> {
   }
 
   void _onPanUpdate(DragUpdateDetails d) {
+    // --- Seçim aracı: taşı veya boyutlandır ---
+    if (_tool == Tool.select) {
+      final key = _selectedKey;
+      final start = _dragStartLocal;
+      final initP1 = _dragInitialP1;
+      final initP2 = _dragInitialP2;
+      if (key == null || start == null || initP1 == null || initP2 == null) {
+        return;
+      }
+      final obj = _objects[key];
+      if (obj is! ShapeObject) return;
+      final delta = d.localPosition - start;
+      final dx = delta.dx / _canvasSize.width;
+      final dy = delta.dy / _canvasSize.height;
+
+      DrawPoint newP1;
+      DrawPoint newP2;
+      if (_activeHandle == null) {
+        // Gövde taşı: p1 ve p2'yi aynı oranda kaydır
+        newP1 = DrawPoint(
+          (initP1.x + dx).clamp(0.0, 1.0),
+          (initP1.y + dy).clamp(0.0, 1.0),
+        );
+        newP2 = DrawPoint(
+          (initP2.x + dx).clamp(0.0, 1.0),
+          (initP2.y + dy).clamp(0.0, 1.0),
+        );
+      } else {
+        // Köşe tutamağı: bounding rect'in ilgili köşesini kaydır.
+        double left = initP1.x < initP2.x ? initP1.x : initP2.x;
+        double top = initP1.y < initP2.y ? initP1.y : initP2.y;
+        double right = initP1.x > initP2.x ? initP1.x : initP2.x;
+        double bottom = initP1.y > initP2.y ? initP1.y : initP2.y;
+        switch (_activeHandle!) {
+          case _Handle.topLeft:
+            left = (left + dx).clamp(0.0, right - 0.02);
+            top = (top + dy).clamp(0.0, bottom - 0.02);
+            break;
+          case _Handle.topRight:
+            right = (right + dx).clamp(left + 0.02, 1.0);
+            top = (top + dy).clamp(0.0, bottom - 0.02);
+            break;
+          case _Handle.bottomRight:
+            right = (right + dx).clamp(left + 0.02, 1.0);
+            bottom = (bottom + dy).clamp(top + 0.02, 1.0);
+            break;
+          case _Handle.bottomLeft:
+            left = (left + dx).clamp(0.0, right - 0.02);
+            bottom = (bottom + dy).clamp(top + 0.02, 1.0);
+            break;
+        }
+        newP1 = DrawPoint(left, top);
+        newP2 = DrawPoint(right, bottom);
+      }
+
+      _objects[key] = ShapeObject(
+        senderId: obj.senderId,
+        objectId: obj.objectId,
+        color: obj.color,
+        fillColor: obj.fillColor,
+        brushSize: obj.brushSize,
+        kind: obj.kind,
+        p1: newP1,
+        p2: newP2,
+      );
+
+      final now = DateTime.now();
+      if (now.difference(_lastMoveBroadcast) >= _moveBroadcastInterval) {
+        _lastMoveBroadcast = now;
+        _udp.sendMove(
+          port: widget.settings.port,
+          userId: widget.settings.userId,
+          targetSenderId: obj.senderId,
+          objectId: obj.objectId,
+          p1: newP1,
+          p2: newP2,
+        );
+      }
+      setState(() => _repaint++);
+      return;
+    }
+
     final p = _normalize(d.localPosition);
     if (_tool == Tool.brush) {
       final key = _myStrokeKey;
@@ -350,6 +538,31 @@ class _DrawScreenState extends State<DrawScreen> {
   void _onPanCancel() => _finishDrag();
 
   void _finishDrag() {
+    // --- Seçim aracı ---
+    if (_tool == Tool.select) {
+      final key = _selectedKey;
+      if (key != null) {
+        final obj = _objects[key];
+        if (obj is ShapeObject &&
+            (_dragInitialP1 != null || _dragInitialP2 != null)) {
+          _udp.sendMove(
+            port: widget.settings.port,
+            userId: widget.settings.userId,
+            targetSenderId: obj.senderId,
+            objectId: obj.objectId,
+            p1: obj.p1,
+            p2: obj.p2,
+          );
+        }
+      }
+      _activeHandle = null;
+      _dragStartLocal = null;
+      _dragInitialP1 = null;
+      _dragInitialP2 = null;
+      setState(() => _repaint++);
+      return;
+    }
+
     if (_tool == Tool.brush) {
       _flushTimer?.cancel();
       _flushStroke(end: true);
@@ -359,6 +572,15 @@ class _DrawScreenState extends State<DrawScreen> {
     } else {
       final prev = _previewShape;
       if (prev != null) {
+        // Küçücük (sadece tap) şekilleri eleyelim — boş kalma.
+        final dx = (prev.p2.x - prev.p1.x).abs() * _canvasSize.width;
+        final dy = (prev.p2.y - prev.p1.y).abs() * _canvasSize.height;
+        final tooSmall = dx < 6 && dy < 6;
+        if (tooSmall) {
+          _previewShape = null;
+          setState(() => _repaint++);
+          return;
+        }
         // Preview'i kalıcı objeye çevir + broadcast
         final key = prev.key;
         _objects[key] = prev;
@@ -407,12 +629,31 @@ class _DrawScreenState extends State<DrawScreen> {
     final key = '${widget.settings.userId}#$lastId';
     if (_objects.remove(key) != null) {
       _order.remove(key);
+      if (_selectedKey == key) _selectedKey = null;
       setState(() => _repaint++);
     }
     _udp.sendDelete(
       port: widget.settings.port,
       userId: widget.settings.userId,
+      targetSenderId: widget.settings.userId,
       objectId: lastId,
+    );
+  }
+
+  Future<void> _deleteSelected() async {
+    final key = _selectedKey;
+    if (key == null) return;
+    final obj = _objects[key];
+    if (obj == null) return;
+    _objects.remove(key);
+    _order.remove(key);
+    _selectedKey = null;
+    setState(() => _repaint++);
+    _udp.sendDelete(
+      port: widget.settings.port,
+      userId: widget.settings.userId,
+      targetSenderId: obj.senderId,
+      objectId: obj.objectId,
     );
   }
 
@@ -547,6 +788,8 @@ class _DrawScreenState extends State<DrawScreen> {
               channel: widget.settings.channel,
               online: _online.values.toList(),
               canUndo: _myUndoStack.isNotEmpty,
+              hasSelection: _selectedKey != null,
+              onDeleteSelected: _deleteSelected,
               onUndo: _undo,
               onSave: _savePng,
               onShare: _sharePng,
@@ -580,6 +823,7 @@ class _DrawScreenState extends State<DrawScreen> {
                                 painter: CanvasPainter(
                                   objects: objectList,
                                   preview: _previewShape,
+                                  selectedKey: _selectedKey,
                                   repaintToken: _repaint,
                                 ),
                                 size: Size.infinite,
@@ -631,6 +875,8 @@ class _TopBar extends StatelessWidget {
   final String channel;
   final List<_Peer> online;
   final bool canUndo;
+  final bool hasSelection;
+  final VoidCallback onDeleteSelected;
   final VoidCallback onUndo;
   final VoidCallback onSave;
   final VoidCallback onShare;
@@ -643,6 +889,8 @@ class _TopBar extends StatelessWidget {
     required this.channel,
     required this.online,
     required this.canUndo,
+    required this.hasSelection,
+    required this.onDeleteSelected,
     required this.onUndo,
     required this.onSave,
     required this.onShare,
@@ -693,6 +941,12 @@ class _TopBar extends StatelessWidget {
                   child: _Dot(color: Color(online[i].color), size: 22),
                 ),
               ),
+            ),
+          if (hasSelection)
+            IconButton(
+              tooltip: 'Seçileni sil',
+              icon: const Icon(Icons.delete_sweep, color: Color(0xFFE53935)),
+              onPressed: onDeleteSelected,
             ),
           IconButton(
             tooltip: 'Geri al',
@@ -785,6 +1039,12 @@ class _BottomBar extends StatelessWidget {
             child: Row(
               children: [
                 _ToolBtn(
+                  icon: Icons.pan_tool_alt,
+                  label: 'Seç',
+                  selected: tool == Tool.select,
+                  onTap: () => onTool(Tool.select),
+                ),
+                _ToolBtn(
                   icon: Icons.brush,
                   label: 'Fırça',
                   selected: tool == Tool.brush,
@@ -838,9 +1098,11 @@ class _BottomBar extends StatelessWidget {
                   icon: Icons.format_color_fill,
                   label: 'Dolgu',
                   on: fill,
-                  enabled: tool != Tool.brush &&
-                      tool != Tool.line &&
-                      tool != Tool.arrow,
+                  // Sadece kapalı alanı olan şekillerde anlamlı.
+                  enabled: tool == Tool.rect ||
+                      tool == Tool.ellipse ||
+                      tool == Tool.star ||
+                      tool == Tool.heart,
                   onTap: () => onFill(!fill),
                 ),
               ],

@@ -4,22 +4,22 @@
 İki veya daha fazla telefon aynı Wi-Fi’da olduğunda, biri ekranda çizdiğinde diğerleri anında görür. Hesap yok, internet yok, sunucu yok.
 
 > iOS & Android · Flutter · AES-256-GCM · UDP broadcast
-> **Güncel sürüm: [v0.2.0](https://github.com/jumabayev/OrtakCizim/releases/tag/v0.2.0)**
+> **Güncel sürüm: [v0.2.1](https://github.com/jumabayev/OrtakCizim/releases/tag/v0.2.1)**
 
 ## Android APK indirme
 
 <table>
   <tr>
     <td align="center" width="220">
-      <a href="https://github.com/jumabayev/OrtakCizim/releases/download/v0.2.0/ortakcizim-v0.2.0.apk">
-        <img src="qr-v0.2.0.png" width="200" alt="QR: OrtakCizim v0.2.0 APK indir">
+      <a href="https://github.com/jumabayev/OrtakCizim/releases/download/v0.2.1/ortakcizim-v0.2.1.apk">
+        <img src="qr-v0.2.1.png" width="200" alt="QR: OrtakCizim v0.2.1 APK indir">
       </a>
       <br>
       <sub>Telefonun kamerasıyla okut</sub>
     </td>
     <td>
       <p><b>📥 Doğrudan indirme:</b></p>
-      <p><a href="https://github.com/jumabayev/OrtakCizim/releases/download/v0.2.0/ortakcizim-v0.2.0.apk">ortakcizim-v0.2.0.apk</a> (~46 MB)</p>
+      <p><a href="https://github.com/jumabayev/OrtakCizim/releases/download/v0.2.1/ortakcizim-v0.2.1.apk">ortakcizim-v0.2.1.apk</a> (~46 MB)</p>
       <p><b>🗂 Tüm sürümler:</b></p>
       <p><a href="https://github.com/jumabayev/OrtakCizim/releases">github.com/jumabayev/OrtakCizim/releases</a></p>
       <ol>
@@ -110,19 +110,23 @@ flutter run
 
 İki cihazı aynı Wi-Fi’ya bağla, ikisinde de aynı kanal adını yaz — başla!
 
-## Yapıldı (v0.2.0)
+## Yapıldı (v0.2.1'e kadar)
 
-- ✅ PNG olarak kaydet + sosyal uygulamalarda paylaş (`gal` + `share_plus`)
-- ✅ Geri al (undo) — yerel sil + `delete` paketi broadcast
+- ✅ PNG olarak kaydet + sosyal uygulamalarda paylaş
+- ✅ Geri al (undo) — yerel sil + delete paketi broadcast
 - ✅ Altı şekil (dikdörtgen, elips, çizgi, ok, yıldız, kalp)
 - ✅ Şekillerde dolgu (fill) toggle
 - ✅ Gökkuşağı fırçası — HSL hue döngüsü
 - ✅ Yumuşak eğri render (midpoint quadratic Bezier)
+- ✅ **Seç aracı** — herhangi bir şekle dokun: **taşı**, köşelerden **boyutlandır**, **sil**
+- ✅ **Kılavuz çizgileri** — şekil çizerken başlangıç (🟢) + bitiş (🔴) noktaları, ölçü etiketi, bounding kesikli çerçeve
+- ✅ **Özel uygulama ikonu** — palet + fırça teması (iOS + Android adaptive)
 
 ## Mümkün geliştirmeler
 
-- Şekilleri seçip **taşı / yeniden boyutlandır** (v0.2.1 adayı)
 - Boya kovası ile mevcut şekli **sonradan doldur**
-- Yerel çizim **geçmişi** (SQLite) — kanala yeni katılana son N hamleyi göster
-- BBTalk'u yan yana — çizim yaparken sesli konuşma
-- Renk damlatıcısı (uzun basınca mevcut renklerin dışından seç)
+- Seçili şeklin rengini/boyutunu panelden değiştir
+- Stroke'ları da seç/taşı (şu an sadece şekiller)
+- Yerel çizim **geçmişi** (SQLite) — yeni katılana son N hamle
+- BBTalk yan yana — çizim yaparken sesli konuşma
+- Renk damlatıcısı (uzun basınca serbest renk)

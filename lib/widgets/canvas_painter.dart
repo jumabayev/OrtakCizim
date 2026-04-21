@@ -14,12 +14,18 @@ class CanvasPainter extends CustomPainter {
   final List<DrawObject> objects;
 
   /// Aktif çizilmekte olan (sürükleme sırasında) şekil, henüz broadcast
-  /// edilmemiş hali. Yerel preview olarak çizilir.
+  /// edilmemiş hali. Yerel preview olarak çizilir + kılavuz çizgiler.
   final DrawObject? preview;
+
+  /// Seçili objenin key'i ("senderId#objectId"). Varsa çerçeve + köşe
+  /// tutamakları çizilir.
+  final String? selectedKey;
+
   final int repaintToken;
   CanvasPainter({
     required this.objects,
     required this.preview,
+    required this.selectedKey,
     required this.repaintToken,
   });
 
@@ -29,7 +35,19 @@ class CanvasPainter extends CustomPainter {
       _drawObject(canvas, size, obj);
     }
     final p = preview;
-    if (p != null) _drawObject(canvas, size, p);
+    if (p != null) {
+      _drawObject(canvas, size, p);
+      _drawPreviewGuides(canvas, size, p);
+    }
+    final selKey = selectedKey;
+    if (selKey != null) {
+      for (final obj in objects) {
+        if (obj.key == selKey && obj is ShapeObject) {
+          _drawSelection(canvas, size, obj);
+          break;
+        }
+      }
+    }
   }
 
   void _drawObject(Canvas canvas, Size size, DrawObject obj) {
@@ -229,6 +247,142 @@ class CanvasPainter extends CustomPainter {
     );
     path.close();
     return path;
+  }
+
+  // --- PREVIEW GUIDES (şekil çizerken) --------------------------------------
+
+  void _drawPreviewGuides(Canvas canvas, Size size, DrawObject obj) {
+    if (obj is! ShapeObject) return;
+    final a = Offset(obj.p1.x * size.width, obj.p1.y * size.height);
+    final b = Offset(obj.p2.x * size.width, obj.p2.y * size.height);
+    final rect = Rect.fromPoints(a, b);
+
+    // Kesikli bounding rect (line/arrow için ayrıca yardımcı olur).
+    final dashPaint = Paint()
+      ..color = Colors.black.withValues(alpha: 0.5)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1;
+    _drawDashedRect(canvas, rect.inflate(2), dashPaint);
+
+    // Başlangıç noktası (yeşil) ve bitiş (kırmızı) — yönü net gösterir.
+    canvas.drawCircle(
+      a,
+      7,
+      Paint()..color = const Color(0xFF43A047),
+    );
+    canvas.drawCircle(
+      a,
+      7,
+      Paint()
+        ..color = Colors.white
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2,
+    );
+    canvas.drawCircle(
+      b,
+      7,
+      Paint()..color = const Color(0xFFE53935),
+    );
+    canvas.drawCircle(
+      b,
+      7,
+      Paint()
+        ..color = Colors.white
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2,
+    );
+
+    // Ölçü bilgisi (örn: 120 × 80).
+    final w = rect.width.round();
+    final h = rect.height.round();
+    final label = '$w×$h';
+    _drawLabel(canvas, rect.bottomRight + const Offset(6, 6), label);
+  }
+
+  void _drawDashedRect(Canvas canvas, Rect r, Paint paint) {
+    const dash = 6.0;
+    const gap = 4.0;
+    void dashedLine(Offset from, Offset to) {
+      final dist = (to - from).distance;
+      if (dist == 0) return;
+      final dir = (to - from) / dist;
+      double drawn = 0;
+      while (drawn < dist) {
+        final a = from + dir * drawn;
+        final end = drawn + dash > dist ? dist : drawn + dash;
+        final b = from + dir * end;
+        canvas.drawLine(a, b, paint);
+        drawn += dash + gap;
+      }
+    }
+
+    dashedLine(r.topLeft, r.topRight);
+    dashedLine(r.topRight, r.bottomRight);
+    dashedLine(r.bottomRight, r.bottomLeft);
+    dashedLine(r.bottomLeft, r.topLeft);
+  }
+
+  void _drawLabel(Canvas canvas, Offset at, String text) {
+    final tp = TextPainter(
+      text: TextSpan(
+        text: text,
+        style: const TextStyle(
+          color: Colors.white,
+          fontSize: 11,
+          fontWeight: FontWeight.w600,
+        ),
+      ),
+      textDirection: TextDirection.ltr,
+    )..layout();
+    final pad = const EdgeInsets.symmetric(horizontal: 6, vertical: 3);
+    final bg = Rect.fromLTWH(
+      at.dx,
+      at.dy,
+      tp.width + pad.horizontal,
+      tp.height + pad.vertical,
+    );
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(bg, const Radius.circular(4)),
+      Paint()..color = Colors.black.withValues(alpha: 0.7),
+    );
+    tp.paint(canvas, Offset(at.dx + pad.left, at.dy + pad.top));
+  }
+
+  // --- SELECTION (Seç aracıyla seçilmiş şekil) ------------------------------
+
+  void _drawSelection(Canvas canvas, Size size, ShapeObject s) {
+    final rect = Rect.fromPoints(
+      Offset(s.p1.x * size.width, s.p1.y * size.height),
+      Offset(s.p2.x * size.width, s.p2.y * size.height),
+    );
+    final outline = Paint()
+      ..color = const Color(0xFF1E88E5)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2;
+    _drawDashedRect(canvas, rect.inflate(4), outline);
+
+    // 4 köşe tutamağı
+    final corners = [
+      rect.topLeft,
+      rect.topRight,
+      rect.bottomRight,
+      rect.bottomLeft,
+    ];
+    for (final c in corners) {
+      canvas.drawCircle(
+        c,
+        10,
+        Paint()..color = Colors.white,
+      );
+      canvas.drawCircle(
+        c,
+        10,
+        Paint()
+          ..color = const Color(0xFF1E88E5)
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 3,
+      );
+    }
   }
 
   @override

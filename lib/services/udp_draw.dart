@@ -9,7 +9,9 @@ import 'channel_codec.dart';
 
 class _Hdr {
   static const List<int> magic = [0x42, 0x42, 0x44, 0x52]; // 'BBDR'
-  static const int version = 2; // v0.2.0: shape + delete eklendi, strokelar rainbow bayrağı taşır
+  // v=3 (v0.2.1+): delete/move paketleri hedef sahibini ayrı taşır; böylece
+  // başkasının objesi de taşınabilir/silinebilir. v=2 ile uyumlu değildir.
+  static const int version = 3;
   static const int size = 8;
 
   static const int typeStroke = 0;
@@ -17,6 +19,7 @@ class _Hdr {
   static const int typePresence = 2;
   static const int typeShape = 3;
   static const int typeDelete = 4;
+  static const int typeMove = 5;
 }
 
 class _StrokeFlags {
@@ -76,9 +79,28 @@ class IncomingShape extends IncomingDrawEvent {
 }
 
 class IncomingDelete extends IncomingDrawEvent {
+  /// Silinecek objenin SAHİBİ (bu bizim userId'miz ya da başkasınınki olabilir).
+  final String targetSenderId;
   final int objectId;
-  IncomingDelete({required String senderId, required this.objectId})
-      : super(senderId);
+  IncomingDelete({
+    required String senderId,
+    required this.targetSenderId,
+    required this.objectId,
+  }) : super(senderId);
+}
+
+class IncomingMove extends IncomingDrawEvent {
+  final String targetSenderId;
+  final int objectId;
+  final DrawPoint p1;
+  final DrawPoint p2;
+  IncomingMove({
+    required String senderId,
+    required this.targetSenderId,
+    required this.objectId,
+    required this.p1,
+    required this.p2,
+  }) : super(senderId);
 }
 
 class IncomingClear extends IncomingDrawEvent {
@@ -216,6 +238,9 @@ class UdpDraw {
         case _Hdr.typeDelete:
           _decodeDelete(senderId, pt);
           break;
+        case _Hdr.typeMove:
+          _decodeMove(senderId, pt);
+          break;
       }
     } catch (_) {
       // Bozuk paket — sessizce bırak.
@@ -311,10 +336,38 @@ class UdpDraw {
   }
 
   void _decodeDelete(String senderId, Uint8List pt) {
-    if (pt.length < 16 + 4) return;
+    // [0..15] deleter (senderId) — zaten parametre olarak geldi
+    // [16..31] target sender
+    // [32..35] target objectId
+    if (pt.length < 16 + 16 + 4) return;
+    final targetSenderId = _bytesToHex(pt.sublist(16, 32));
     final objectId =
-        pt[16] | (pt[17] << 8) | (pt[18] << 16) | (pt[19] << 24);
-    _incoming.add(IncomingDelete(senderId: senderId, objectId: objectId));
+        pt[32] | (pt[33] << 8) | (pt[34] << 16) | (pt[35] << 24);
+    _incoming.add(IncomingDelete(
+      senderId: senderId,
+      targetSenderId: targetSenderId,
+      objectId: objectId,
+    ));
+  }
+
+  void _decodeMove(String senderId, Uint8List pt) {
+    // [0..15] mover, [16..31] target sender, [32..35] target objectId,
+    // [36..39] p1 (x u16, y u16), [40..43] p2 (x u16, y u16)
+    if (pt.length < 16 + 16 + 4 + 4 + 4) return;
+    final targetSenderId = _bytesToHex(pt.sublist(16, 32));
+    final objectId =
+        pt[32] | (pt[33] << 8) | (pt[34] << 16) | (pt[35] << 24);
+    final p1xi = pt[36] | (pt[37] << 8);
+    final p1yi = pt[38] | (pt[39] << 8);
+    final p2xi = pt[40] | (pt[41] << 8);
+    final p2yi = pt[42] | (pt[43] << 8);
+    _incoming.add(IncomingMove(
+      senderId: senderId,
+      targetSenderId: targetSenderId,
+      objectId: objectId,
+      p1: DrawPoint(p1xi / 65535.0, p1yi / 65535.0),
+      p2: DrawPoint(p2xi / 65535.0, p2yi / 65535.0),
+    ));
   }
 
   void _decodeClear(String senderId, Uint8List pt) {
@@ -451,15 +504,52 @@ class UdpDraw {
   Future<void> sendDelete({
     required int port,
     required String userId,
+    required String targetSenderId,
     required int objectId,
   }) async {
     final userIdBytes = _hexToBytes(userId);
-    if (userIdBytes.length != 16) return;
-    final plaintext = Uint8List(16 + 4);
+    final targetBytes = _hexToBytes(targetSenderId);
+    if (userIdBytes.length != 16 || targetBytes.length != 16) return;
+    final plaintext = Uint8List(16 + 16 + 4);
     plaintext.setRange(0, 16, userIdBytes);
-    _u32(plaintext, 16, objectId);
+    plaintext.setRange(16, 32, targetBytes);
+    _u32(plaintext, 32, objectId);
     await _sendEncrypted(
       type: _Hdr.typeDelete,
+      plaintext: plaintext,
+      port: port,
+    );
+  }
+
+  Future<void> sendMove({
+    required int port,
+    required String userId,
+    required String targetSenderId,
+    required int objectId,
+    required DrawPoint p1,
+    required DrawPoint p2,
+  }) async {
+    final userIdBytes = _hexToBytes(userId);
+    final targetBytes = _hexToBytes(targetSenderId);
+    if (userIdBytes.length != 16 || targetBytes.length != 16) return;
+    final plaintext = Uint8List(16 + 16 + 4 + 4 + 4);
+    plaintext.setRange(0, 16, userIdBytes);
+    plaintext.setRange(16, 32, targetBytes);
+    _u32(plaintext, 32, objectId);
+    final p1xi = (p1.x.clamp(0.0, 1.0) * 65535).round();
+    final p1yi = (p1.y.clamp(0.0, 1.0) * 65535).round();
+    final p2xi = (p2.x.clamp(0.0, 1.0) * 65535).round();
+    final p2yi = (p2.y.clamp(0.0, 1.0) * 65535).round();
+    plaintext[36] = p1xi & 0xFF;
+    plaintext[37] = (p1xi >> 8) & 0xFF;
+    plaintext[38] = p1yi & 0xFF;
+    plaintext[39] = (p1yi >> 8) & 0xFF;
+    plaintext[40] = p2xi & 0xFF;
+    plaintext[41] = (p2xi >> 8) & 0xFF;
+    plaintext[42] = p2yi & 0xFF;
+    plaintext[43] = (p2yi >> 8) & 0xFF;
+    await _sendEncrypted(
+      type: _Hdr.typeMove,
       plaintext: plaintext,
       port: port,
     );
