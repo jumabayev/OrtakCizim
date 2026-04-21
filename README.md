@@ -1,0 +1,89 @@
+# OrtakÇizim
+
+**Çocuklar için yerel ağda canlı ortak çizim tahtası.**
+İki veya daha fazla telefon aynı Wi-Fi’da olduğunda, biri ekranda çizdiğinde diğerleri anında görür. Hesap yok, internet yok, sunucu yok.
+
+> iOS & Android · Flutter · AES-256-GCM · UDP broadcast
+
+## Özellikler
+
+- 🎨 **Anlık ortak tuval** — parmakla çizince hemen diğer telefonlarda da beliriyor.
+- 🔒 **Şifreli kanal** — kanal adı ortak parolayı belirler. Farklı kanaldaki çizimler görünmez.
+- 👥 **Canlı ressam listesi** — kim bağlı, hangi renkte olduğu üst barda görünür.
+- 🌈 **12 hazır renk + 6 fırça kalınlığı** — küçük çocuklar için anlaşılır arayüz.
+- 🧽 **Tahtayı temizle** — bir buton, herkeste siliniyor.
+- 🔋 **Offline** — evdeki Wi-Fi yeter, internet bağlantısı gerekmiyor.
+
+## Nasıl çalışır
+
+```
+parmak → normalize koordinat (0..1) → AES-GCM şifrele
+        → UDP broadcast (x.x.x.255:9101)
+                                 │
+                                 ▼
+diğer telefonlar :9101 → decrypt (yanlış kanal = düş)
+                     → stroke puanları tuvale eklenir
+```
+
+### Paket formatı
+
+| ofset | uzunluk | anlamı                             |
+|------:|--------:|-------------------------------------|
+| 0     | 4       | magic `BBDR`                        |
+| 4     | 1       | sürüm (=1)                          |
+| 5     | 1       | tip (0=stroke, 1=clear, 2=presence) |
+| 6–7   | 2       | seq (LE u16)                        |
+| 8–19  | 12      | AES-GCM nonce                       |
+| 20…   | N       | ciphertext + 16 byte GCM tag        |
+
+### Stroke plaintext
+
+| ofset      | anlamı                              |
+|-----------:|--------------------------------------|
+| 0–15       | senderId (16 byte)                   |
+| 16–19      | strokeId (u32 LE)                    |
+| 20         | nameLen                              |
+| 21…        | isim (UTF-8)                         |
+| …+0..2     | renk RGB (3 byte)                    |
+| …+3        | fırça boyutu (u8 piksel)             |
+| …+4        | bayraklar (bit0 = strokeEnd)         |
+| …+5        | nokta sayısı (0–50)                  |
+| …          | N × (x u16 LE, y u16 LE) normalize   |
+
+Kanal anahtarı: `key = SHA-256(utf8("<kanal>|OrtakCizim-v1"))`
+
+## Dosya düzeni
+
+```
+lib/
+  main.dart
+  models/
+    palette.dart      — 12 renk + 6 fırça boyutu
+    stroke.dart       — Stroke + DrawPoint
+  services/
+    settings.dart     — ad / renk / kanal (SharedPreferences)
+    channel_codec.dart — AES-256-GCM
+    udp_draw.dart     — broadcast, paket kodlama/çözme, olay akışı
+  widgets/
+    canvas_painter.dart — CustomPaint çizim motoru
+  screens/
+    draw_screen.dart  — ana tuval, üst/alt çubuk
+    settings_screen.dart — kanal/ad/renk ayarları
+```
+
+## Kurulum
+
+```bash
+flutter pub get
+flutter run
+```
+
+İki cihazı aynı Wi-Fi’ya bağla, ikisinde de aynı kanal adını yaz — başla!
+
+## Mümkün geliştirmeler
+
+- PNG olarak kaydet / paylaş
+- Geri al (undo) — son hamle yerel olarak silinir ve diğerlere "undo" paketi gider
+- Sihirli fırça: yıldız, kalp, parlak iz vb. hazır şablonlar
+- Renk damlatıcısı (uzun basınca mevcut renklerin dışından seç)
+- BBTalk’u yan yana — çizim yaparken sesli konuşma
