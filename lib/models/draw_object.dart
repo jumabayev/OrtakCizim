@@ -13,7 +13,8 @@ enum ShapeKind {
   line,
   arrow,
   star,
-  heart;
+  heart,
+  stamp; // extra alanı emoji metnini taşır
 
   static ShapeKind fromByte(int b) =>
       (b >= 0 && b < ShapeKind.values.length)
@@ -48,6 +49,7 @@ sealed class DrawObject {
 class StrokeObject extends DrawObject {
   final List<DrawPoint> points;
   final bool rainbow;
+  final bool confetti; // true → çizgi yerine her noktaya emoji basar
   bool finished;
 
   StrokeObject({
@@ -57,6 +59,7 @@ class StrokeObject extends DrawObject {
     required super.brushSize,
     required this.points,
     this.rainbow = false,
+    this.confetti = false,
     super.fillColor,
     this.finished = false,
   });
@@ -66,6 +69,8 @@ class ShapeObject extends DrawObject {
   final ShapeKind kind;
   final DrawPoint p1;
   final DrawPoint p2;
+  /// stamp kind için emoji metni; diğer şekillerde boş.
+  final String extra;
 
   ShapeObject({
     required super.senderId,
@@ -75,6 +80,7 @@ class ShapeObject extends DrawObject {
     required this.kind,
     required this.p1,
     required this.p2,
+    this.extra = '',
     super.fillColor,
   });
 }

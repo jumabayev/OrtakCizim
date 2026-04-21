@@ -12,6 +12,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
+import '../models/avatars.dart';
 import '../models/draw_object.dart';
 import '../models/palette.dart';
 import '../services/channel_codec.dart';
@@ -32,7 +33,7 @@ String? _subnetBroadcast(String? ip, String? mask) {
   }
 }
 
-enum Tool { select, brush, rect, ellipse, line, arrow, star, heart }
+enum Tool { select, brush, rect, ellipse, line, arrow, star, heart, stamp }
 
 ShapeKind _toolToShape(Tool t) {
   switch (t) {
@@ -48,6 +49,8 @@ ShapeKind _toolToShape(Tool t) {
       return ShapeKind.star;
     case Tool.heart:
       return ShapeKind.heart;
+    case Tool.stamp:
+      return ShapeKind.stamp;
     case Tool.brush:
     case Tool.select:
       throw StateError('not a shape tool');
@@ -61,12 +64,26 @@ class _Peer {
   final String id;
   String name;
   int color;
+  int avatarIdx;
   DateTime lastSeen;
   _Peer({
     required this.id,
     required this.name,
     required this.color,
+    required this.avatarIdx,
     required this.lastSeen,
+  });
+}
+
+/// Bir peer'ın avatarından yukarı uçuşan kısa ömürlü reaksiyon.
+class _FloatingReaction {
+  final String emoji;
+  final double startTimeMs;
+  final double offsetX; // çıkış noktasının x ofseti (avatarın merkezine göre)
+  _FloatingReaction({
+    required this.emoji,
+    required this.startTimeMs,
+    required this.offsetX,
   });
 }
 
@@ -85,6 +102,7 @@ class _DrawScreenState extends State<DrawScreen> {
   Timer? _presenceTimer;
   Timer? _cleanupTimer;
   Timer? _flushTimer;
+  Timer? _reactionTicker;
   final _rng = Random();
 
   // Çizim durumu
@@ -96,10 +114,15 @@ class _DrawScreenState extends State<DrawScreen> {
   // Araçlar / ayarlar
   Tool _tool = Tool.brush;
   bool _rainbow = false;
+  bool _confetti = false;
   bool _fill = false;
+  int _stampIdx = Stamps.defaultIdx;
   double _brushSize = Brushes.defaultSize;
   late int _color;
   int _repaint = 0;
+
+  // Ephemeral reaksiyonlar: target userId → son 2.5 sn içinde başlayanlar.
+  final Map<String, List<_FloatingReaction>> _activeReactions = {};
 
   // Aktif kendi çizim
   int _myObjectId = 0;
@@ -141,6 +164,7 @@ class _DrawScreenState extends State<DrawScreen> {
     _presenceTimer?.cancel();
     _cleanupTimer?.cancel();
     _flushTimer?.cancel();
+    _reactionTicker?.cancel();
     _udp.dispose();
     super.dispose();
   }
@@ -191,15 +215,17 @@ class _DrawScreenState extends State<DrawScreen> {
       userId: widget.settings.userId,
       name: widget.settings.name,
       color: _color,
+      avatarIdx: widget.settings.avatarIdx,
     );
   }
 
-  void _upsertOnline(String id, String name, int color) {
+  void _upsertOnline(String id, String name, int color, int avatarIdx) {
     final existed = _online.containsKey(id);
     _online[id] = _Peer(
       id: id,
       name: name,
       color: color,
+      avatarIdx: avatarIdx,
       lastSeen: DateTime.now(),
     );
     if (!existed) _sendPresence();
@@ -208,7 +234,7 @@ class _DrawScreenState extends State<DrawScreen> {
   void _onIncoming(IncomingDrawEvent e) {
     switch (e) {
       case IncomingPresence p:
-        _upsertOnline(p.senderId, p.senderName, p.color);
+        _upsertOnline(p.senderId, p.senderName, p.color, p.avatarIdx);
         if (mounted) setState(() {});
         break;
 
@@ -222,7 +248,12 @@ class _DrawScreenState extends State<DrawScreen> {
         break;
 
       case IncomingStrokeChunk c:
-        _upsertOnline(c.senderId, c.senderName, c.color);
+        _upsertOnline(
+          c.senderId,
+          c.senderName,
+          c.color,
+          _online[c.senderId]?.avatarIdx ?? 0,
+        );
         final key = '${c.senderId}#${c.objectId}';
         final existing = _objects[key];
         if (existing is StrokeObject) {
@@ -236,6 +267,7 @@ class _DrawScreenState extends State<DrawScreen> {
             brushSize: c.brushSize,
             points: List.of(c.points),
             rainbow: c.rainbow,
+            confetti: c.confetti,
             finished: c.strokeEnd,
           );
           _objects[key] = s;
@@ -246,7 +278,12 @@ class _DrawScreenState extends State<DrawScreen> {
         break;
 
       case IncomingShape s:
-        _upsertOnline(s.senderId, s.senderName, s.color);
+        _upsertOnline(
+          s.senderId,
+          s.senderName,
+          s.color,
+          _online[s.senderId]?.avatarIdx ?? 0,
+        );
         final key = '${s.senderId}#${s.objectId}';
         final obj = ShapeObject(
           senderId: s.senderId,
@@ -257,6 +294,7 @@ class _DrawScreenState extends State<DrawScreen> {
           kind: s.kind,
           p1: s.p1,
           p2: s.p2,
+          extra: s.extra,
         );
         _objects[key] = obj;
         if (!_order.contains(key)) _order.add(key);
@@ -286,11 +324,62 @@ class _DrawScreenState extends State<DrawScreen> {
             kind: existing.kind,
             p1: m.p1,
             p2: m.p2,
+            extra: existing.extra,
           );
           setState(() => _repaint++);
         }
         break;
+
+      case IncomingReaction r:
+        _spawnReaction(r.targetUserId, r.reactionIdx);
+        break;
     }
+  }
+
+  /// Yeni bir reaksiyonu hedef kullanıcının avatarına ekler, 2.5 sn'den
+  /// eski olanları temizler ve animasyon ticker'ını gerekirse başlatır.
+  void _spawnReaction(String targetUserId, int reactionIdx) {
+    if (reactionIdx < 0 || reactionIdx >= Reactions.count) return;
+    final emoji = Reactions.list[reactionIdx];
+    final now = DateTime.now().millisecondsSinceEpoch.toDouble();
+    final list = _activeReactions.putIfAbsent(targetUserId, () => []);
+    list.add(_FloatingReaction(
+      emoji: emoji,
+      startTimeMs: now,
+      offsetX: (_rng.nextDouble() - 0.5) * 30,
+    ));
+    _ensureReactionTicker();
+    if (mounted) setState(() {});
+  }
+
+  /// Reaksiyonlar aktif oldukça ~40 ms aralıkla ekranı yeniler; biter bitmez
+  /// kendini durdurur — boşuna CPU harcama.
+  void _ensureReactionTicker() {
+    if (_reactionTicker != null) return;
+    _reactionTicker = Timer.periodic(const Duration(milliseconds: 40), (_) {
+      final now = DateTime.now().millisecondsSinceEpoch.toDouble();
+      final cutoff = now - 2500;
+      _activeReactions.forEach((_, v) {
+        v.removeWhere((r) => r.startTimeMs < cutoff);
+      });
+      _activeReactions.removeWhere((_, v) => v.isEmpty);
+      if (_activeReactions.isEmpty) {
+        _reactionTicker?.cancel();
+        _reactionTicker = null;
+      }
+      if (mounted) setState(() {});
+    });
+  }
+
+  void _sendReactionTo(String targetUserId, int reactionIdx) {
+    // Hem yerel tetikle (anlık geri bildirim) hem de ağa yay.
+    _spawnReaction(targetUserId, reactionIdx);
+    _udp.sendReaction(
+      port: widget.settings.port,
+      userId: widget.settings.userId,
+      targetUserId: targetUserId,
+      reactionIdx: reactionIdx,
+    );
   }
 
   void _evictOld() {
@@ -399,6 +488,7 @@ class _DrawScreenState extends State<DrawScreen> {
         brushSize: _brushSize,
         points: [pt],
         rainbow: _rainbow,
+        confetti: _confetti,
       );
       _objects[key] = stroke;
       _order.add(key);
@@ -420,6 +510,7 @@ class _DrawScreenState extends State<DrawScreen> {
         kind: _toolToShape(_tool),
         p1: p,
         p2: p,
+        extra: _tool == Tool.stamp ? Stamps.list[_stampIdx] : '',
       );
     }
     setState(() => _repaint++);
@@ -490,6 +581,7 @@ class _DrawScreenState extends State<DrawScreen> {
         kind: obj.kind,
         p1: newP1,
         p2: newP2,
+        extra: obj.extra,
       );
 
       final now = DateTime.now();
@@ -529,6 +621,7 @@ class _DrawScreenState extends State<DrawScreen> {
         kind: prev.kind,
         p1: prev.p1,
         p2: p,
+        extra: prev.extra,
       );
     }
     setState(() => _repaint++);
@@ -597,6 +690,7 @@ class _DrawScreenState extends State<DrawScreen> {
           brushSize: prev.brushSize,
           p1: prev.p1,
           p2: prev.p2,
+          extra: prev.extra,
         );
       }
       _previewShape = null;
@@ -618,6 +712,7 @@ class _DrawScreenState extends State<DrawScreen> {
       points: chunk,
       strokeEnd: end,
       rainbow: _rainbow,
+      confetti: _confetti,
     );
   }
 
@@ -785,11 +880,14 @@ class _DrawScreenState extends State<DrawScreen> {
             _TopBar(
               myName: widget.settings.name,
               myColor: _color,
+              myAvatarIdx: widget.settings.avatarIdx,
               channel: widget.settings.channel,
               online: _online.values.toList(),
+              activeReactions: _activeReactions,
               canUndo: _myUndoStack.isNotEmpty,
               hasSelection: _selectedKey != null,
               onDeleteSelected: _deleteSelected,
+              onReactionTo: _sendReactionTo,
               onUndo: _undo,
               onSave: _savePng,
               onShare: _sharePng,
@@ -844,11 +942,28 @@ class _DrawScreenState extends State<DrawScreen> {
             ),
             _BottomBar(
               tool: _tool,
-              onTool: (t) => setState(() => _tool = t),
+              onTool: (t) => setState(() {
+                _tool = t;
+                // Gökkuşağı ve confetti sadece fırçada anlamlı.
+                if (t != Tool.brush) {
+                  _rainbow = false;
+                  _confetti = false;
+                }
+              }),
               rainbow: _rainbow,
-              onRainbow: (v) => setState(() => _rainbow = v),
+              onRainbow: (v) => setState(() {
+                _rainbow = v;
+                if (v) _confetti = false; // karşılıklı dışlayıcı
+              }),
+              confetti: _confetti,
+              onConfetti: (v) => setState(() {
+                _confetti = v;
+                if (v) _rainbow = false;
+              }),
               fill: _fill,
               onFill: (v) => setState(() => _fill = v),
+              stampIdx: _stampIdx,
+              onStampIdx: (i) => setState(() => _stampIdx = i),
               selectedColor: _color,
               brushSize: _brushSize,
               onColor: (c) {
@@ -872,11 +987,14 @@ class _DrawScreenState extends State<DrawScreen> {
 class _TopBar extends StatelessWidget {
   final String myName;
   final int myColor;
+  final int myAvatarIdx;
   final String channel;
   final List<_Peer> online;
+  final Map<String, List<_FloatingReaction>> activeReactions;
   final bool canUndo;
   final bool hasSelection;
   final VoidCallback onDeleteSelected;
+  final void Function(String targetUserId, int reactionIdx) onReactionTo;
   final VoidCallback onUndo;
   final VoidCallback onSave;
   final VoidCallback onShare;
@@ -886,11 +1004,14 @@ class _TopBar extends StatelessWidget {
   const _TopBar({
     required this.myName,
     required this.myColor,
+    required this.myAvatarIdx,
     required this.channel,
     required this.online,
+    required this.activeReactions,
     required this.canUndo,
     required this.hasSelection,
     required this.onDeleteSelected,
+    required this.onReactionTo,
     required this.onUndo,
     required this.onSave,
     required this.onShare,
@@ -900,15 +1021,21 @@ class _TopBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final myAvatar = Avatars.get(myAvatarIdx);
     return Container(
-      padding: const EdgeInsets.fromLTRB(12, 8, 6, 8),
+      padding: const EdgeInsets.fromLTRB(10, 6, 4, 6),
       decoration: BoxDecoration(
         color: Colors.white,
         border: Border(bottom: BorderSide(color: Colors.grey.shade300)),
       ),
       child: Row(
         children: [
-          _Dot(color: Color(myColor)),
+          _AvatarChip(
+            emoji: myAvatar.emoji,
+            bgColor: Color(myColor),
+            size: 38,
+            reactions: const [],
+          ),
           const SizedBox(width: 8),
           Expanded(
             child: Column(
@@ -929,17 +1056,29 @@ class _TopBar extends StatelessWidget {
           ),
           if (online.isNotEmpty)
             SizedBox(
-              height: 28,
-              width: (online.length * 24.0).clamp(24.0, 120.0),
+              height: 52,
+              width: (online.length * 46.0).clamp(46.0, 220.0),
               child: ListView.separated(
                 shrinkWrap: true,
                 scrollDirection: Axis.horizontal,
                 itemCount: online.length,
                 separatorBuilder: (_, _) => const SizedBox(width: 4),
-                itemBuilder: (_, i) => Tooltip(
-                  message: online[i].name,
-                  child: _Dot(color: Color(online[i].color), size: 22),
-                ),
+                itemBuilder: (_, i) {
+                  final peer = online[i];
+                  final av = Avatars.get(peer.avatarIdx);
+                  return GestureDetector(
+                    onTap: () => _showReactionPicker(context, peer),
+                    child: Tooltip(
+                      message: peer.name,
+                      child: _AvatarChip(
+                        emoji: av.emoji,
+                        bgColor: Color(peer.color),
+                        size: 40,
+                        reactions: activeReactions[peer.id] ?? const [],
+                      ),
+                    ),
+                  );
+                },
               ),
             ),
           if (hasSelection)
@@ -979,20 +1118,197 @@ class _TopBar extends StatelessWidget {
   }
 }
 
-class _Dot extends StatelessWidget {
-  final Color color;
+/// Avatar + üstünde yukarı uçuşan reaksiyon emojilerini gösteren chip.
+class _AvatarChip extends StatelessWidget {
+  final String emoji;
+  final Color bgColor;
   final double size;
-  const _Dot({required this.color, this.size = 20});
+  final List<_FloatingReaction> reactions;
+
+  const _AvatarChip({
+    required this.emoji,
+    required this.bgColor,
+    required this.size,
+    required this.reactions,
+  });
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      width: size,
-      height: size,
-      decoration: BoxDecoration(
-        color: color,
-        shape: BoxShape.circle,
-        border: Border.all(color: Colors.black12, width: 1),
+    final now = DateTime.now().millisecondsSinceEpoch.toDouble();
+    return SizedBox(
+      width: size + 12,
+      height: 52,
+      child: Stack(
+        clipBehavior: Clip.none,
+        alignment: Alignment.bottomCenter,
+        children: [
+          // Avatar dairesi
+          Positioned(
+            bottom: 4,
+            child: Container(
+              width: size,
+              height: size,
+              decoration: BoxDecoration(
+                color: bgColor,
+                shape: BoxShape.circle,
+                border: Border.all(color: Colors.white, width: 2),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: 0.12),
+                    blurRadius: 4,
+                    offset: const Offset(0, 1),
+                  ),
+                ],
+              ),
+              alignment: Alignment.center,
+              child: Text(emoji, style: TextStyle(fontSize: size * 0.55)),
+            ),
+          ),
+          // Uçuşan reaksiyonlar
+          for (final r in reactions)
+            _FloatingReactionWidget(reaction: r, nowMs: now, baseSize: size),
+        ],
+      ),
+    );
+  }
+}
+
+class _FloatingReactionWidget extends StatelessWidget {
+  final _FloatingReaction reaction;
+  final double nowMs;
+  final double baseSize;
+
+  const _FloatingReactionWidget({
+    required this.reaction,
+    required this.nowMs,
+    required this.baseSize,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final t = ((nowMs - reaction.startTimeMs) / 2500).clamp(0.0, 1.0);
+    // Yukarı doğru uçuş + hafif sol-sağ sallanma + soluk
+    final riseY = baseSize + t * 60; // pixel yukarı
+    final wobbleX = 10 * (t * 6.283).clamp(0, 6.283).toDouble();
+    final sway = (wobbleX % 20) - 10;
+    final opacity = (1 - t).clamp(0.0, 1.0);
+    final scale = 0.7 + 0.5 * (1 - (t - 0.3).abs()).clamp(0.0, 1.0);
+
+    return Positioned(
+      bottom: riseY,
+      child: Opacity(
+        opacity: opacity,
+        child: Transform.translate(
+          offset: Offset(reaction.offsetX + sway, 0),
+          child: Transform.scale(
+            scale: scale,
+            child: Text(
+              reaction.emoji,
+              style: const TextStyle(fontSize: 26),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Reaksiyon seçici — bottomSheet olarak açılır, 5 büyük emoji butonu.
+Future<void> _showReactionPicker(BuildContext context, _Peer peer) async {
+  await showModalBottomSheet<void>(
+    context: context,
+    showDragHandle: true,
+    builder: (ctx) {
+      return SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 4, 16, 20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                '${peer.name}\'a tepki gönder',
+                style: const TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w600,
+                  color: Colors.black87,
+                ),
+              ),
+              const SizedBox(height: 12),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                children: [
+                  for (int i = 0; i < Reactions.list.length; i++)
+                    _ReactionButton(
+                      emoji: Reactions.list[i],
+                      onTap: () {
+                        Navigator.of(ctx).pop();
+                        // Üst bar'ı tutan ata state'ini bulup reaksiyon gönder.
+                        final state = context
+                            .findAncestorStateOfType<_DrawScreenState>();
+                        state?._sendReactionTo(peer.id, i);
+                      },
+                    ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      );
+    },
+  );
+}
+
+class _StampBtn extends StatelessWidget {
+  final String emoji;
+  final bool selected;
+  final VoidCallback onTap;
+  const _StampBtn({
+    required this.emoji,
+    required this.selected,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 120),
+        width: selected ? 44 : 38,
+        height: selected ? 44 : 38,
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          color: selected
+              ? Theme.of(context).colorScheme.primary.withValues(alpha: 0.14)
+              : Colors.black.withValues(alpha: 0.04),
+          border: Border.all(
+            color: selected
+                ? Theme.of(context).colorScheme.primary
+                : Colors.transparent,
+            width: 2,
+          ),
+        ),
+        alignment: Alignment.center,
+        child: Text(emoji, style: TextStyle(fontSize: selected ? 26 : 22)),
+      ),
+    );
+  }
+}
+
+class _ReactionButton extends StatelessWidget {
+  final String emoji;
+  final VoidCallback onTap;
+  const _ReactionButton({required this.emoji, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return InkResponse(
+      onTap: onTap,
+      radius: 34,
+      child: Padding(
+        padding: const EdgeInsets.all(6),
+        child: Text(emoji, style: const TextStyle(fontSize: 38)),
       ),
     );
   }
@@ -1003,8 +1319,12 @@ class _BottomBar extends StatelessWidget {
   final ValueChanged<Tool> onTool;
   final bool rainbow;
   final ValueChanged<bool> onRainbow;
+  final bool confetti;
+  final ValueChanged<bool> onConfetti;
   final bool fill;
   final ValueChanged<bool> onFill;
+  final int stampIdx;
+  final ValueChanged<int> onStampIdx;
   final int selectedColor;
   final double brushSize;
   final ValueChanged<int> onColor;
@@ -1015,8 +1335,12 @@ class _BottomBar extends StatelessWidget {
     required this.onTool,
     required this.rainbow,
     required this.onRainbow,
+    required this.confetti,
+    required this.onConfetti,
     required this.fill,
     required this.onFill,
+    required this.stampIdx,
+    required this.onStampIdx,
     required this.selectedColor,
     required this.brushSize,
     required this.onColor,
@@ -1075,6 +1399,12 @@ class _BottomBar extends StatelessWidget {
                   onTap: () => onTool(Tool.arrow),
                 ),
                 _ToolBtn(
+                  icon: Icons.emoji_emotions,
+                  label: 'Damga',
+                  selected: tool == Tool.stamp,
+                  onTap: () => onTool(Tool.stamp),
+                ),
+                _ToolBtn(
                   icon: Icons.star,
                   label: 'Yıldız',
                   selected: tool == Tool.star,
@@ -1095,6 +1425,13 @@ class _BottomBar extends StatelessWidget {
                   onTap: () => onRainbow(!rainbow),
                 ),
                 _Toggle(
+                  icon: Icons.celebration,
+                  label: 'Konfeti',
+                  on: confetti,
+                  enabled: tool == Tool.brush,
+                  onTap: () => onConfetti(!confetti),
+                ),
+                _Toggle(
                   icon: Icons.format_color_fill,
                   label: 'Dolgu',
                   on: fill,
@@ -1109,21 +1446,41 @@ class _BottomBar extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 6),
-          SingleChildScrollView(
-            scrollDirection: Axis.horizontal,
-            child: Row(
-              children: [
-                for (final c in Palette.colors) ...[
-                  _ColorSwatch(
-                    color: c,
-                    selected: c == selectedColor,
-                    onTap: () => onColor(c),
-                  ),
-                  const SizedBox(width: 6),
+          if (tool == Tool.stamp)
+            SizedBox(
+              height: 46,
+              child: SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                child: Row(
+                  children: [
+                    for (int i = 0; i < Stamps.list.length; i++) ...[
+                      _StampBtn(
+                        emoji: Stamps.list[i],
+                        selected: i == stampIdx,
+                        onTap: () => onStampIdx(i),
+                      ),
+                      const SizedBox(width: 4),
+                    ],
+                  ],
+                ),
+              ),
+            )
+          else
+            SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: Row(
+                children: [
+                  for (final c in Palette.colors) ...[
+                    _ColorSwatch(
+                      color: c,
+                      selected: c == selectedColor,
+                      onTap: () => onColor(c),
+                    ),
+                    const SizedBox(width: 6),
+                  ],
                 ],
-              ],
+              ),
             ),
-          ),
           Row(
             children: [
               const Icon(Icons.brush, size: 18),

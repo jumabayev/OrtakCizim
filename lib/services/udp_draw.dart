@@ -9,9 +9,9 @@ import 'channel_codec.dart';
 
 class _Hdr {
   static const List<int> magic = [0x42, 0x42, 0x44, 0x52]; // 'BBDR'
-  // v=3 (v0.2.1+): delete/move paketleri hedef sahibini ayrı taşır; böylece
-  // başkasının objesi de taşınabilir/silinebilir. v=2 ile uyumlu değildir.
-  static const int version = 3;
+  // v=4 (v0.3.0+): presence avatarIdx taşır, stroke confetti flag, shape
+  // extra (stamp emoji), yeni typeReaction.
+  static const int version = 4;
   static const int size = 8;
 
   static const int typeStroke = 0;
@@ -20,11 +20,13 @@ class _Hdr {
   static const int typeShape = 3;
   static const int typeDelete = 4;
   static const int typeMove = 5;
+  static const int typeReaction = 6;
 }
 
 class _StrokeFlags {
   static const int strokeEnd = 0x01;
   static const int rainbow = 0x02;
+  static const int confetti = 0x04;
 }
 
 class _ShapeFlags {
@@ -44,6 +46,7 @@ class IncomingStrokeChunk extends IncomingDrawEvent {
   final List<DrawPoint> points;
   final bool strokeEnd;
   final bool rainbow;
+  final bool confetti;
   IncomingStrokeChunk({
     required String senderId,
     required this.objectId,
@@ -53,6 +56,7 @@ class IncomingStrokeChunk extends IncomingDrawEvent {
     required this.points,
     required this.strokeEnd,
     required this.rainbow,
+    required this.confetti,
   }) : super(senderId);
 }
 
@@ -65,6 +69,7 @@ class IncomingShape extends IncomingDrawEvent {
   final double brushSize;
   final DrawPoint p1;
   final DrawPoint p2;
+  final String extra; // stamp emojisi (başka şekillerde '')
   IncomingShape({
     required String senderId,
     required this.objectId,
@@ -75,6 +80,7 @@ class IncomingShape extends IncomingDrawEvent {
     required this.brushSize,
     required this.p1,
     required this.p2,
+    required this.extra,
   }) : super(senderId);
 }
 
@@ -112,10 +118,25 @@ class IncomingClear extends IncomingDrawEvent {
 class IncomingPresence extends IncomingDrawEvent {
   final String senderName;
   final int color;
+  final int avatarIdx;
   IncomingPresence({
     required String senderId,
     required this.senderName,
     required this.color,
+    required this.avatarIdx,
+  }) : super(senderId);
+}
+
+/// Bir ressam başkasının avatar'ına dokununca gelen anlık tepki.
+/// Ephemeral — objelere eklenmez, sadece animasyon tetikler.
+class IncomingReaction extends IncomingDrawEvent {
+  /// Tepkinin yönlendirildiği kullanıcı.
+  final String targetUserId;
+  final int reactionIdx; // Reactions.list içindeki emoji
+  IncomingReaction({
+    required String senderId,
+    required this.targetUserId,
+    required this.reactionIdx,
   }) : super(senderId);
 }
 
@@ -241,6 +262,9 @@ class UdpDraw {
         case _Hdr.typeMove:
           _decodeMove(senderId, pt);
           break;
+        case _Hdr.typeReaction:
+          _decodeReaction(senderId, pt);
+          break;
       }
     } catch (_) {
       // Bozuk paket — sessizce bırak.
@@ -286,6 +310,7 @@ class UdpDraw {
       points: points,
       strokeEnd: (flags & _StrokeFlags.strokeEnd) != 0,
       rainbow: (flags & _StrokeFlags.rainbow) != 0,
+      confetti: (flags & _StrokeFlags.confetti) != 0,
     ));
   }
 
@@ -295,6 +320,7 @@ class UdpDraw {
     // [21..] name
     // [+0] kind, [+1..3] stroke RGB, [+4..6] fill RGB, [+7] brushSize,
     // [+8] flags, [+9..12] p1 x/y u16 LE, [+13..16] p2 x/y u16 LE
+    // [+17] extraLen, [+18..] extra UTF-8 (stamp emoji)
     if (pt.length < 16 + 4 + 1) return;
     final objectId =
         pt[16] | (pt[17] << 8) | (pt[18] << 16) | (pt[19] << 24);
@@ -321,6 +347,16 @@ class UdpDraw {
     c += 4;
     final p2xi = pt[c] | (pt[c + 1] << 8);
     final p2yi = pt[c + 2] | (pt[c + 3] << 8);
+    c += 4;
+
+    String extra = '';
+    if (pt.length >= c + 1) {
+      final extraLen = pt[c];
+      c += 1;
+      if (extraLen > 0 && pt.length >= c + extraLen) {
+        extra = utf8.decode(pt.sublist(c, c + extraLen), allowMalformed: true);
+      }
+    }
 
     _incoming.add(IncomingShape(
       senderId: senderId,
@@ -332,6 +368,7 @@ class UdpDraw {
       brushSize: brushSize,
       p1: DrawPoint(p1xi / 65535.0, p1yi / 65535.0),
       p2: DrawPoint(p2xi / 65535.0, p2yi / 65535.0),
+      extra: extra,
     ));
   }
 
@@ -389,10 +426,29 @@ class UdpDraw {
         (pt[17 + nameLen] << 16) |
         (pt[17 + nameLen + 1] << 8) |
         pt[17 + nameLen + 2];
+    int avatarIdx = 0;
+    if (pt.length >= 17 + nameLen + 4) {
+      avatarIdx = pt[17 + nameLen + 3];
+    }
     _incoming.add(IncomingPresence(
       senderId: senderId,
       senderName: name,
       color: color,
+      avatarIdx: avatarIdx,
+    ));
+  }
+
+  void _decodeReaction(String senderId, Uint8List pt) {
+    // [0..15] senderId (zaten parametrede)
+    // [16..31] targetUserId
+    // [32] reactionIdx
+    if (pt.length < 16 + 16 + 1) return;
+    final targetUserId = _bytesToHex(pt.sublist(16, 32));
+    final reactionIdx = pt[32];
+    _incoming.add(IncomingReaction(
+      senderId: senderId,
+      targetUserId: targetUserId,
+      reactionIdx: reactionIdx,
     ));
   }
 
@@ -408,6 +464,7 @@ class UdpDraw {
     required List<DrawPoint> points,
     required bool strokeEnd,
     required bool rainbow,
+    required bool confetti,
   }) async {
     if (points.isEmpty && !strokeEnd) return;
     final userIdBytes = _hexToBytes(userId);
@@ -432,6 +489,7 @@ class UdpDraw {
     int flags = 0;
     if (strokeEnd) flags |= _StrokeFlags.strokeEnd;
     if (rainbow) flags |= _StrokeFlags.rainbow;
+    if (confetti) flags |= _StrokeFlags.confetti;
     plaintext[c++] = flags;
     plaintext[c++] = pointCount;
     for (int i = 0; i < pointCount; i++) {
@@ -461,14 +519,18 @@ class UdpDraw {
     required double brushSize,
     required DrawPoint p1,
     required DrawPoint p2,
+    String extra = '',
   }) async {
     final userIdBytes = _hexToBytes(userId);
     if (userIdBytes.length != 16) return;
     final safeName = name.length > 63 ? name.substring(0, 63) : name;
     final nameBytes = utf8.encode(safeName);
+    final extraBytes = utf8.encode(extra);
+    final safeExtraLen = extraBytes.length > 16 ? 16 : extraBytes.length;
 
-    final plaintext =
-        Uint8List(16 + 4 + 1 + nameBytes.length + 1 + 3 + 3 + 1 + 1 + 4 + 4);
+    final plaintext = Uint8List(
+      16 + 4 + 1 + nameBytes.length + 1 + 3 + 3 + 1 + 1 + 4 + 4 + 1 + safeExtraLen,
+    );
 
     plaintext.setRange(0, 16, userIdBytes);
     _u32(plaintext, 16, objectId);
@@ -497,6 +559,10 @@ class UdpDraw {
     plaintext[c++] = (p2xi >> 8) & 0xFF;
     plaintext[c++] = p2yi & 0xFF;
     plaintext[c++] = (p2yi >> 8) & 0xFF;
+    plaintext[c++] = safeExtraLen;
+    if (safeExtraLen > 0) {
+      plaintext.setRange(c, c + safeExtraLen, extraBytes);
+    }
 
     await _sendEncrypted(type: _Hdr.typeShape, plaintext: plaintext, port: port);
   }
@@ -580,22 +646,44 @@ class UdpDraw {
     required String userId,
     required String name,
     required int color,
+    required int avatarIdx,
   }) async {
     final userIdBytes = _hexToBytes(userId);
     if (userIdBytes.length != 16) return;
     final safeName = name.length > 63 ? name.substring(0, 63) : name;
     final nameBytes = utf8.encode(safeName);
 
-    final plaintext = Uint8List(16 + 1 + nameBytes.length + 3);
+    final plaintext = Uint8List(16 + 1 + nameBytes.length + 3 + 1);
     plaintext.setRange(0, 16, userIdBytes);
     plaintext[16] = nameBytes.length;
     plaintext.setRange(17, 17 + nameBytes.length, nameBytes);
     plaintext[17 + nameBytes.length] = (color >> 16) & 0xFF;
     plaintext[17 + nameBytes.length + 1] = (color >> 8) & 0xFF;
     plaintext[17 + nameBytes.length + 2] = color & 0xFF;
+    plaintext[17 + nameBytes.length + 3] = avatarIdx & 0xFF;
 
     await _sendEncrypted(
       type: _Hdr.typePresence,
+      plaintext: plaintext,
+      port: port,
+    );
+  }
+
+  Future<void> sendReaction({
+    required int port,
+    required String userId,
+    required String targetUserId,
+    required int reactionIdx,
+  }) async {
+    final userIdBytes = _hexToBytes(userId);
+    final targetBytes = _hexToBytes(targetUserId);
+    if (userIdBytes.length != 16 || targetBytes.length != 16) return;
+    final plaintext = Uint8List(16 + 16 + 1);
+    plaintext.setRange(0, 16, userIdBytes);
+    plaintext.setRange(16, 32, targetBytes);
+    plaintext[32] = reactionIdx & 0xFF;
+    await _sendEncrypted(
+      type: _Hdr.typeReaction,
       plaintext: plaintext,
       port: port,
     );

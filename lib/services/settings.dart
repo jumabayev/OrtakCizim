@@ -2,6 +2,7 @@ import 'dart:math';
 
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../models/avatars.dart';
 import '../models/palette.dart';
 
 class AppSettings {
@@ -10,11 +11,13 @@ class AppSettings {
   static const _kName = 'name';
   static const _kColor = 'color';
   static const _kUserId = 'userId';
+  static const _kAvatar = 'avatarIdx';
 
   String channel;
   int port;
   String name;
   int color;
+  int avatarIdx;
   final String userId;
 
   AppSettings({
@@ -22,6 +25,7 @@ class AppSettings {
     required this.port,
     required this.name,
     required this.color,
+    required this.avatarIdx,
     required this.userId,
   });
 
@@ -50,11 +54,18 @@ class AppSettings {
       await p.setInt(_kColor, color);
     }
 
+    int avatarIdx = p.getInt(_kAvatar) ?? -1;
+    if (avatarIdx < 0) {
+      avatarIdx = Avatars.random();
+      await p.setInt(_kAvatar, avatarIdx);
+    }
+
     return AppSettings(
       channel: p.getString(_kChannel) ?? 'OrtakCizim',
       port: p.getInt(_kPort) ?? 9101,
       name: name,
       color: color,
+      avatarIdx: avatarIdx,
       userId: userId,
     );
   }
@@ -65,6 +76,7 @@ class AppSettings {
     await p.setInt(_kPort, port);
     await p.setString(_kName, name);
     await p.setInt(_kColor, color);
+    await p.setInt(_kAvatar, avatarIdx);
     await p.setString(_kUserId, userId);
   }
 }

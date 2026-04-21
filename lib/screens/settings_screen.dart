@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../models/avatars.dart';
 import '../models/palette.dart';
 import '../services/settings.dart';
 
@@ -16,6 +17,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   late TextEditingController _port;
   late TextEditingController _name;
   late int _color;
+  late int _avatarIdx;
 
   @override
   void initState() {
@@ -24,6 +26,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _port = TextEditingController(text: widget.settings.port.toString());
     _name = TextEditingController(text: widget.settings.name);
     _color = widget.settings.color;
+    _avatarIdx = widget.settings.avatarIdx;
   }
 
   @override
@@ -41,7 +44,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
       ..channel = ch.isEmpty ? 'OrtakCizim' : ch
       ..port = port
       ..name = _name.text.trim().isEmpty ? 'Ressam' : _name.text.trim()
-      ..color = _color;
+      ..color = _color
+      ..avatarIdx = _avatarIdx;
     await widget.settings.save();
     if (mounted) Navigator.of(context).pop(true);
   }
@@ -64,6 +68,51 @@ class _SettingsScreenState extends State<SettingsScreen> {
             maxLength: 30,
           ),
           const SizedBox(height: 12),
+          const _SectionLabel('AVATARIM'),
+          const SizedBox(height: 8),
+          SizedBox(
+            height: 72,
+            child: ListView.separated(
+              scrollDirection: Axis.horizontal,
+              itemCount: Avatars.list.length,
+              separatorBuilder: (_, _) => const SizedBox(width: 8),
+              itemBuilder: (_, i) {
+                final a = Avatars.get(i);
+                final sel = i == _avatarIdx;
+                return GestureDetector(
+                  onTap: () => setState(() => _avatarIdx = i),
+                  child: AnimatedContainer(
+                    duration: const Duration(milliseconds: 120),
+                    width: 60,
+                    height: 60,
+                    decoration: BoxDecoration(
+                      color: Color(a.color),
+                      shape: BoxShape.circle,
+                      border: Border.all(
+                        color: sel ? Colors.black : Colors.transparent,
+                        width: 3,
+                      ),
+                      boxShadow: sel
+                          ? [
+                              BoxShadow(
+                                color: Color(a.color).withValues(alpha: 0.5),
+                                blurRadius: 10,
+                                spreadRadius: 2,
+                              ),
+                            ]
+                          : null,
+                    ),
+                    alignment: Alignment.center,
+                    child: Text(
+                      a.emoji,
+                      style: const TextStyle(fontSize: 30),
+                    ),
+                  ),
+                );
+              },
+            ),
+          ),
+          const SizedBox(height: 16),
           const _SectionLabel('BENİM RENGİM'),
           const SizedBox(height: 8),
           Wrap(

@@ -60,8 +60,31 @@ class CanvasPainter extends CustomPainter {
 
   // --- STROKE ---------------------------------------------------------------
 
+  // Confetti fırçası için her noktada basılacak emoji listesi — index modulo.
+  static const List<String> _confettiEmojis = [
+    '⭐', '✨', '💫', '🌟', '❤️', '💖', '🌸', '🌺', '🎉', '🎊',
+  ];
+
   void _drawStroke(Canvas canvas, Size size, StrokeObject s) {
     if (s.points.isEmpty) return;
+
+    final absPoints = s.points
+        .map((p) => Offset(p.x * size.width, p.y * size.height))
+        .toList(growable: false);
+
+    // Confetti fırçası: her birkaç noktada bir emoji bas (çizgi yerine).
+    if (s.confetti) {
+      final step = (s.brushSize * 1.2).clamp(8.0, 60.0);
+      double last = -step;
+      for (int i = 0; i < absPoints.length; i++) {
+        if (i == 0 || (absPoints[i] - absPoints[(i - 1).clamp(0, i)]).distance + last >= step) {
+          final emoji = _confettiEmojis[i % _confettiEmojis.length];
+          _drawEmoji(canvas, absPoints[i], emoji, s.brushSize * 1.8);
+          last = 0;
+        }
+      }
+      return;
+    }
 
     final basePaint = Paint()
       ..strokeWidth = s.brushSize
@@ -69,10 +92,6 @@ class CanvasPainter extends CustomPainter {
       ..strokeJoin = StrokeJoin.round
       ..isAntiAlias = true
       ..style = PaintingStyle.stroke;
-
-    final absPoints = s.points
-        .map((p) => Offset(p.x * size.width, p.y * size.height))
-        .toList(growable: false);
 
     if (absPoints.length == 1) {
       final p = absPoints.first;
@@ -175,7 +194,31 @@ class CanvasPainter extends CustomPainter {
         if (fillPaint != null) canvas.drawPath(path, fillPaint);
         canvas.drawPath(path, strokePaint);
         break;
+      case ShapeKind.stamp:
+        // extra emoji metnini bounding rect'e sığdırarak çiz.
+        if (s.extra.isNotEmpty) {
+          final maxDim = rect.shortestSide;
+          if (maxDim > 0) {
+            _drawEmoji(canvas, rect.center, s.extra, maxDim);
+          }
+        }
+        break;
     }
+  }
+
+  /// Bir emoji/karakteri merkezine konumlanmış olarak `targetSize` yükseklikte çizer.
+  void _drawEmoji(Canvas canvas, Offset center, String emoji, double targetSize) {
+    final tp = TextPainter(
+      text: TextSpan(
+        text: emoji,
+        style: TextStyle(fontSize: targetSize * 0.85),
+      ),
+      textDirection: TextDirection.ltr,
+    )..layout();
+    tp.paint(
+      canvas,
+      Offset(center.dx - tp.width / 2, center.dy - tp.height / 2),
+    );
   }
 
   void _drawArrow(Canvas canvas, Rect rect, Paint paint) {
