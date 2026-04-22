@@ -258,9 +258,11 @@ class _DrawScreenState extends State<DrawScreen> {
         );
         final key = '${c.senderId}#${c.objectId}';
         final existing = _objects[key];
+        StrokeObject? target;
         if (existing is StrokeObject) {
           existing.points.addAll(c.points);
           if (c.strokeEnd) existing.finished = true;
+          target = existing;
         } else if (existing == null) {
           final s = StrokeObject(
             senderId: c.senderId,
@@ -275,6 +277,11 @@ class _DrawScreenState extends State<DrawScreen> {
           _objects[key] = s;
           _order.add(key);
           _evictOld();
+          target = s;
+        }
+        // Gönderen parmağı kaldırdığında Chaikin ile yumuşat.
+        if (c.strokeEnd && target != null) {
+          _smoothStrokeIfEligible(target);
         }
         setState(() => _repaint++);
         break;
@@ -388,6 +395,33 @@ class _DrawScreenState extends State<DrawScreen> {
       final old = _order.removeAt(0);
       _objects.remove(old);
     }
+  }
+
+  /// Chaikin corner-cutting — jagged çizgiyi yumuşatır, 1 iterasyon.
+  /// Her segment iki yeni ¼-¾ noktasıyla değiştirilir. Konfeti fırçasında
+  /// emoji yoğunluğu iki katına çıkacağından atlanır.
+  static List<DrawPoint> _chaikin(List<DrawPoint> pts) {
+    if (pts.length < 3) return pts;
+    final out = <DrawPoint>[pts.first];
+    for (int i = 0; i < pts.length - 1; i++) {
+      final a = pts[i];
+      final b = pts[i + 1];
+      out.add(DrawPoint(a.x * 0.75 + b.x * 0.25, a.y * 0.75 + b.y * 0.25));
+      out.add(DrawPoint(a.x * 0.25 + b.x * 0.75, a.y * 0.25 + b.y * 0.75));
+    }
+    out.add(pts.last);
+    return out;
+  }
+
+  /// Bitmiş bir stroke'un yerel `points` listesini yumuşat. Broadcast
+  /// edilmemesi, alıcılar aynı algoritmayı kendi tarafında uygular.
+  void _smoothStrokeIfEligible(StrokeObject s) {
+    if (s.confetti) return; // emoji sıklığı bozulmasın
+    if (s.points.length < 3) return;
+    final smoothed = _chaikin(s.points);
+    s.points
+      ..clear()
+      ..addAll(smoothed);
   }
 
   // --- Pan callbacks --------------------------------------------------------
@@ -661,7 +695,15 @@ class _DrawScreenState extends State<DrawScreen> {
       _flushTimer?.cancel();
       _flushStroke(end: true);
       final key = _myStrokeKey;
-      if (key != null) _myUndoStack.add(_myObjectId);
+      if (key != null) {
+        _myUndoStack.add(_myObjectId);
+        // Parmak kalktığında kendi stroke'umuzu yumuşat — jagged çizgiyi
+        // düzgün bir eğriye çevirir. Broadcast'e gerek yok: alıcılar hem
+        // aynı algoritmayı hem de strokeEnd bayrağını kendi tarafında alıp
+        // aynı sonucu üretiyor.
+        final s = _objects[key];
+        if (s is StrokeObject) _smoothStrokeIfEligible(s);
+      }
       _myStrokeKey = null;
     } else {
       final prev = _previewShape;
