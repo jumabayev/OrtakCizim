@@ -879,20 +879,25 @@ class _DrawScreenState extends State<DrawScreen> {
           children: [
             _TopBar(
               myName: widget.settings.name,
-              myColor: _color,
-              myAvatarIdx: widget.settings.avatarIdx,
               channel: widget.settings.channel,
-              online: _online.values.toList(),
-              activeReactions: _activeReactions,
+              onlineCount: _online.length + 1,
               canUndo: _myUndoStack.isNotEmpty,
               hasSelection: _selectedKey != null,
               onDeleteSelected: _deleteSelected,
-              onReactionTo: _sendReactionTo,
               onUndo: _undo,
               onSave: _savePng,
               onShare: _sharePng,
               onClear: _confirmClear,
               onSettings: _openSettings,
+            ),
+            _OnlineStrip(
+              myUserId: widget.settings.userId,
+              myName: widget.settings.name,
+              myColor: _color,
+              myAvatarIdx: widget.settings.avatarIdx,
+              online: _online.values.toList(),
+              activeReactions: _activeReactions,
+              onReactionTo: _sendReactionTo,
             ),
             if (_error != null)
               Padding(
@@ -986,15 +991,11 @@ class _DrawScreenState extends State<DrawScreen> {
 
 class _TopBar extends StatelessWidget {
   final String myName;
-  final int myColor;
-  final int myAvatarIdx;
   final String channel;
-  final List<_Peer> online;
-  final Map<String, List<_FloatingReaction>> activeReactions;
+  final int onlineCount;
   final bool canUndo;
   final bool hasSelection;
   final VoidCallback onDeleteSelected;
-  final void Function(String targetUserId, int reactionIdx) onReactionTo;
   final VoidCallback onUndo;
   final VoidCallback onSave;
   final VoidCallback onShare;
@@ -1003,15 +1004,11 @@ class _TopBar extends StatelessWidget {
 
   const _TopBar({
     required this.myName,
-    required this.myColor,
-    required this.myAvatarIdx,
     required this.channel,
-    required this.online,
-    required this.activeReactions,
+    required this.onlineCount,
     required this.canUndo,
     required this.hasSelection,
     required this.onDeleteSelected,
-    required this.onReactionTo,
     required this.onUndo,
     required this.onSave,
     required this.onShare,
@@ -1021,22 +1018,14 @@ class _TopBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final myAvatar = Avatars.get(myAvatarIdx);
     return Container(
-      padding: const EdgeInsets.fromLTRB(10, 6, 4, 6),
+      padding: const EdgeInsets.fromLTRB(12, 6, 4, 6),
       decoration: BoxDecoration(
         color: Colors.white,
         border: Border(bottom: BorderSide(color: Colors.grey.shade300)),
       ),
       child: Row(
         children: [
-          _AvatarChip(
-            emoji: myAvatar.emoji,
-            bgColor: Color(myColor),
-            size: 38,
-            reactions: const [],
-          ),
-          const SizedBox(width: 8),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -1048,39 +1037,12 @@ class _TopBar extends StatelessWidget {
                   overflow: TextOverflow.ellipsis,
                 ),
                 Text(
-                  '# $channel  •  ${online.length + 1} ressam',
+                  '# $channel  •  $onlineCount ressam',
                   style: const TextStyle(fontSize: 11, color: Colors.black54),
                 ),
               ],
             ),
           ),
-          if (online.isNotEmpty)
-            SizedBox(
-              height: 52,
-              width: (online.length * 46.0).clamp(46.0, 220.0),
-              child: ListView.separated(
-                shrinkWrap: true,
-                scrollDirection: Axis.horizontal,
-                itemCount: online.length,
-                separatorBuilder: (_, _) => const SizedBox(width: 4),
-                itemBuilder: (_, i) {
-                  final peer = online[i];
-                  final av = Avatars.get(peer.avatarIdx);
-                  return GestureDetector(
-                    onTap: () => _showReactionPicker(context, peer),
-                    child: Tooltip(
-                      message: peer.name,
-                      child: _AvatarChip(
-                        emoji: av.emoji,
-                        bgColor: Color(peer.color),
-                        size: 40,
-                        reactions: activeReactions[peer.id] ?? const [],
-                      ),
-                    ),
-                  );
-                },
-              ),
-            ),
           if (hasSelection)
             IconButton(
               tooltip: 'Seçileni sil',
@@ -1118,56 +1080,174 @@ class _TopBar extends StatelessWidget {
   }
 }
 
-/// Avatar + üstünde yukarı uçuşan reaksiyon emojilerini gösteren chip.
-class _AvatarChip extends StatelessWidget {
-  final String emoji;
-  final Color bgColor;
-  final double size;
-  final List<_FloatingReaction> reactions;
+/// Top bar'ın hemen altında tam genişlikte duran kanal üyeleri şeridi.
+/// Avatarın üstünde bol alan bırakır → reaksiyon animasyonları kırpılmaz.
+class _OnlineStrip extends StatelessWidget {
+  final String myUserId;
+  final String myName;
+  final int myColor;
+  final int myAvatarIdx;
+  final List<_Peer> online;
+  final Map<String, List<_FloatingReaction>> activeReactions;
+  final void Function(String targetUserId, int reactionIdx) onReactionTo;
 
-  const _AvatarChip({
-    required this.emoji,
-    required this.bgColor,
-    required this.size,
-    required this.reactions,
+  const _OnlineStrip({
+    required this.myUserId,
+    required this.myName,
+    required this.myColor,
+    required this.myAvatarIdx,
+    required this.online,
+    required this.activeReactions,
+    required this.onReactionTo,
   });
 
   @override
   Widget build(BuildContext context) {
-    final now = DateTime.now().millisecondsSinceEpoch.toDouble();
-    return SizedBox(
-      width: size + 12,
-      height: 52,
-      child: Stack(
-        clipBehavior: Clip.none,
-        alignment: Alignment.bottomCenter,
+    final myAvatar = Avatars.get(myAvatarIdx);
+    final hasPeers = online.isNotEmpty;
+    return Container(
+      height: 140,
+      decoration: BoxDecoration(
+        color: const Color(0xFFF7F7FA),
+        border: Border(bottom: BorderSide(color: Colors.grey.shade300)),
+      ),
+      child: ListView(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
         children: [
-          // Avatar dairesi
-          Positioned(
-            bottom: 4,
-            child: Container(
-              width: size,
-              height: size,
+          // Benim avatarım (solda, "Sen" etiketiyle) — reaksiyonu ben de görürüm.
+          _AvatarChip(
+            name: '$myName (sen)',
+            emoji: myAvatar.emoji,
+            bgColor: Color(myColor),
+            reactions: activeReactions[myUserId] ?? const [],
+            onTap: null,
+          ),
+          if (hasPeers) ...[
+            const SizedBox(width: 10),
+            Container(
+              width: 1,
+              margin: const EdgeInsets.symmetric(vertical: 12),
+              color: Colors.black.withValues(alpha: 0.08),
+            ),
+            const SizedBox(width: 6),
+            for (final peer in online) ...[
+              _AvatarChip(
+                name: peer.name,
+                emoji: Avatars.get(peer.avatarIdx).emoji,
+                bgColor: Color(peer.color),
+                reactions: activeReactions[peer.id] ?? const [],
+                onTap: () => _showReactionPicker(context, peer),
+              ),
+              const SizedBox(width: 4),
+            ],
+          ] else
+            const Padding(
+              padding: EdgeInsets.only(left: 16),
+              child: Center(
+                child: Text(
+                  'Aynı kanaldan başka ressam bekleniyor…',
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: Colors.black54,
+                    fontStyle: FontStyle.italic,
+                  ),
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Avatar + adı + üstünde yukarı uçuşan reaksiyon emojilerini gösteren chip.
+/// Dikey yerleşim: [56 px reaction alanı] / [56 px avatar] / [ad]
+class _AvatarChip extends StatelessWidget {
+  final String name;
+  final String emoji;
+  final Color bgColor;
+  final List<_FloatingReaction> reactions;
+  final VoidCallback? onTap;
+
+  const _AvatarChip({
+    required this.name,
+    required this.emoji,
+    required this.bgColor,
+    required this.reactions,
+    required this.onTap,
+  });
+
+  static const double _size = 52;
+  static const double _reactionHeight = 46;
+
+  @override
+  Widget build(BuildContext context) {
+    final now = DateTime.now().millisecondsSinceEpoch.toDouble();
+    final chipWidth = _size + 20;
+    return GestureDetector(
+      onTap: onTap,
+      behavior: HitTestBehavior.opaque,
+      child: SizedBox(
+        width: chipWidth,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // Reaksiyon uçuş alanı — avatarın hemen üstünde.
+            SizedBox(
+              width: chipWidth,
+              height: _reactionHeight,
+              child: Stack(
+                clipBehavior: Clip.none,
+                alignment: Alignment.bottomCenter,
+                children: [
+                  for (final r in reactions)
+                    _FloatingReactionWidget(
+                      reaction: r,
+                      nowMs: now,
+                      areaHeight: _reactionHeight,
+                    ),
+                ],
+              ),
+            ),
+            // Avatar
+            Container(
+              width: _size,
+              height: _size,
               decoration: BoxDecoration(
                 color: bgColor,
                 shape: BoxShape.circle,
-                border: Border.all(color: Colors.white, width: 2),
+                border: Border.all(color: Colors.white, width: 2.5),
                 boxShadow: [
                   BoxShadow(
-                    color: Colors.black.withValues(alpha: 0.12),
-                    blurRadius: 4,
-                    offset: const Offset(0, 1),
+                    color: Colors.black.withValues(alpha: 0.15),
+                    blurRadius: 5,
+                    offset: const Offset(0, 2),
                   ),
                 ],
               ),
               alignment: Alignment.center,
-              child: Text(emoji, style: TextStyle(fontSize: size * 0.55)),
+              child: Text(emoji, style: const TextStyle(fontSize: 28)),
             ),
-          ),
-          // Uçuşan reaksiyonlar
-          for (final r in reactions)
-            _FloatingReactionWidget(reaction: r, nowMs: now, baseSize: size),
-        ],
+            const SizedBox(height: 2),
+            // Ad
+            SizedBox(
+              width: chipWidth,
+              child: Text(
+                name,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                  fontSize: 10.5,
+                  height: 1.1,
+                  fontWeight: FontWeight.w500,
+                  color: Colors.black87,
+                ),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -1176,35 +1256,39 @@ class _AvatarChip extends StatelessWidget {
 class _FloatingReactionWidget extends StatelessWidget {
   final _FloatingReaction reaction;
   final double nowMs;
-  final double baseSize;
+
+  /// İçinde yaşadığı Stack'in yüksekliği. Reaksiyon 0..areaHeight arasında yükselir.
+  final double areaHeight;
 
   const _FloatingReactionWidget({
     required this.reaction,
     required this.nowMs,
-    required this.baseSize,
+    required this.areaHeight,
   });
 
   @override
   Widget build(BuildContext context) {
     final t = ((nowMs - reaction.startTimeMs) / 2500).clamp(0.0, 1.0);
-    // Yukarı doğru uçuş + hafif sol-sağ sallanma + soluk
-    final riseY = baseSize + t * 60; // pixel yukarı
-    final wobbleX = 10 * (t * 6.283).clamp(0, 6.283).toDouble();
-    final sway = (wobbleX % 20) - 10;
-    final opacity = (1 - t).clamp(0.0, 1.0);
-    final scale = 0.7 + 0.5 * (1 - (t - 0.3).abs()).clamp(0.0, 1.0);
+    // Hafif ease-out — başta hızlı, sonda yavaş.
+    final easedT = 1 - (1 - t) * (1 - t);
+    final riseY = easedT * areaHeight;
+    // Sol-sağ hafif sallanma (sine dalgası).
+    final sway = 10 * (easedT * 8).clamp(0.0, 100.0);
+    final wobble = (sway % 20) - 10;
+    final opacity = (1 - t * t).clamp(0.0, 1.0); // sonunda hızlı söner
+    final scale = 0.6 + 0.6 * (1 - (t - 0.25).abs()).clamp(0.0, 1.0);
 
     return Positioned(
       bottom: riseY,
       child: Opacity(
         opacity: opacity,
         child: Transform.translate(
-          offset: Offset(reaction.offsetX + sway, 0),
+          offset: Offset(reaction.offsetX + wobble, 0),
           child: Transform.scale(
             scale: scale,
             child: Text(
               reaction.emoji,
-              style: const TextStyle(fontSize: 26),
+              style: const TextStyle(fontSize: 28),
             ),
           ),
         ),

@@ -178,16 +178,33 @@ class UdpDraw {
     _selfUserId = selfUserId;
     setBroadcastAddress(broadcastAddress);
 
-    final s = await RawDatagramSocket.bind(
-      InternetAddress.anyIPv4,
-      port,
-      reuseAddress: true,
-      reusePort: _canReusePort(),
-    );
+    final s = await _bindWithFallback(port);
     s.broadcastEnabled = true;
     s.readEventsEnabled = true;
     _socket = s;
     s.listen(_onEvent, onError: (_) {}, cancelOnError: false);
+  }
+
+  /// Önce `reusePort: true` dener; bazı Android/iOS çekirdeklerinde bu bayrak
+  /// desteklenmiyor, o zaman reusePort'suz tekrar dener.
+  Future<RawDatagramSocket> _bindWithFallback(int port) async {
+    if (_canReusePort()) {
+      try {
+        return await RawDatagramSocket.bind(
+          InternetAddress.anyIPv4,
+          port,
+          reuseAddress: true,
+          reusePort: true,
+        );
+      } catch (_) {
+        // yedek yola düş
+      }
+    }
+    return RawDatagramSocket.bind(
+      InternetAddress.anyIPv4,
+      port,
+      reuseAddress: true,
+    );
   }
 
   bool _canReusePort() =>
